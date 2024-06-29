@@ -15,3 +15,4 @@ tensorboardX
 torch
 torchvision
 tqdm
+torchprofile
