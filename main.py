@@ -18,6 +18,7 @@ import torchvision.utils as vutils
 import seaborn as sns
 import torch.nn.init as init
 import pickle
+import torchprofile
 
 # Custom Libraries
 import utils
@@ -114,7 +115,6 @@ def main(args, ITE=0):
     all_loss = np.zeros(args.end_iter,float)
     all_accuracy = np.zeros(args.end_iter,float)
 
-
     for _ite in range(args.start_iter, ITERATION):
         if not _ite == 0:
             prune_by_percentile(args.prune_percent, resample=resample, reinit=reinit)
@@ -127,15 +127,16 @@ def main(args, ITE=0):
                 #elif args.arch_type == "alexnet":
                 #    model = AlexNet.AlexNet().to(device)
                 #elif args.arch_type == "vgg16":
-                #    model = vgg.vgg16().to(device)  
+                #    model = vgg.vgg16().to(device)
                 #elif args.arch_type == "resnet18":
-                #    model = resnet.resnet18().to(device)   
+                #    model = resnet.resnet18().to(device)
                 #elif args.arch_type == "densenet121":
-                #    model = densenet.densenet121().to(device)   
+                #    model = densenet.densenet121().to(device)
                 #else:
                 #    print("\nWrong Model choice\n")
                 #    exit()
                 step = 0
+
                 for name, param in model.named_parameters():
                     if 'weight' in name:
                         weight_dev = param.device
@@ -151,7 +152,7 @@ def main(args, ITE=0):
         comp1 = utils.print_nonzeros(model)
         comp[_ite] = comp1
         pbar = tqdm(range(args.end_iter))
-
+        total_flops_in_all_epochs = 0
         for iter_ in pbar:
 
             # Frequency for Testing
@@ -165,15 +166,16 @@ def main(args, ITE=0):
                     torch.save(model,f"{os.getcwd()}/saves/{args.arch_type}/{args.dataset}/{_ite}_model_{args.prune_type}.pth.tar")
 
             # Training
-            loss = train(model, train_loader, optimizer, criterion)
+            loss, total_flops_in_training = train(model, train_loader, optimizer, criterion)
+            total_flops_in_all_epochs += total_flops_in_training
             all_loss[iter_] = loss
             all_accuracy[iter_] = accuracy
             
             # Frequency for Printing Accuracy and Loss
             if iter_ % args.print_freq == 0:
                 pbar.set_description(
-                    f'Train Epoch: {iter_}/{args.end_iter} Loss: {loss:.6f} Accuracy: {accuracy:.2f}% Best Accuracy: {best_accuracy:.2f}%')       
-
+                    f'Train Epoch: {iter_}/{args.end_iter} Loss: {loss:.6f} Accuracy: {accuracy:.2f}% Best Accuracy: {best_accuracy:.2f}%')
+        print(f'Total flops: {total_flops_in_all_epochs:.2f}%')
         writer.add_scalar('Accuracy/test', best_accuracy, comp1)
         bestacc[_ite]=best_accuracy
 
@@ -230,6 +232,7 @@ def train(model, train_loader, optimizer, criterion):
     EPS = 1e-6
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.train()
+    total_num_of_flops_in_training = 0
     for batch_idx, (imgs, targets) in enumerate(train_loader):
         optimizer.zero_grad()
         #imgs, targets = next(train_loader)
@@ -245,8 +248,12 @@ def train(model, train_loader, optimizer, criterion):
                 grad_tensor = p.grad.data.cpu().numpy()
                 grad_tensor = np.where(tensor < EPS, 0, grad_tensor)
                 p.grad.data = torch.from_numpy(grad_tensor).to(device)
+
         optimizer.step()
-    return train_loss.item()
+        # Calculate FLOPs
+        total_num_of_flops_in_training += torchprofile.profile_macs(model, imgs)
+    # print(f"Total Flops in all training epochs: {total_num_of_flops_in_training}")
+    return train_loss.item(), total_num_of_flops_in_training
 
 # Function for Testing
 def test(model, test_loader, criterion):
